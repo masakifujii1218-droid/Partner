@@ -5,105 +5,13 @@ import random
 import threading
 import time
 import heapq
+from flask import Flask
+import discord
+from discord.ext import commands
+from discord import app_commands
 
 # ==========================================
-# Flask (ダミー定義含む)
-# ==========================================
-try:
-    from flask import Flask
-except ModuleNotFoundError:
-    class Flask:
-        def __init__(self, name):
-            self.name = name
-            self.routes = {}
-
-        def route(self, path):
-            def decorator(func):
-                self.routes[path] = func
-                return func
-            return decorator
-
-        def run(self, *args, **kwargs):
-            pass
-
-        def test_client(self):
-            class Client:
-                def __init__(self, app):
-                    self.app = app
-
-                def get(self, path):
-                    body = self.app.routes[path]()
-                    return type(
-                        "Response",
-                        (),
-                        {
-                            "status_code": 200,
-                            "get_data": lambda self, as_text=False: body
-                        }
-                    )()
-            return Client(self)
-
-# ==========================================
-# Discord (ダミー定義含む)
-# ==========================================
-try:
-    import discord
-    from discord.ext import commands
-    from discord import app_commands
-except ModuleNotFoundError:
-    class DummyChoice:
-        def __init__(self, name=None, value=None):
-            self.name = name
-            self.value = value
-
-        def __class_getitem__(cls, item):
-            return cls
-
-    class DummyAppCommands:
-        @staticmethod
-        def choices(**kwargs):
-            def deco(func):
-                return func
-            return deco
-        Choice = DummyChoice
-
-    class DummyIntents:
-        members = False
-        @staticmethod
-        def default():
-            return DummyIntents()
-
-    class DummyUI:
-        class View:
-            def __init__(self, *args, **kwargs):
-                pass
-        class Modal:
-            def __init__(self, *args, **kwargs):
-                pass
-        class Button:
-            pass
-        class TextInput:
-            def __init__(self, *args, **kwargs):
-                self.value = ""
-                self.label = kwargs.get("label")
-        @staticmethod
-        def button(*args, **kwargs):
-            def deco(func):
-                return func
-            return deco
-
-    class DummyDiscord:
-        Intents = DummyIntents
-        ui = DummyUI
-        Interaction = object
-        ButtonStyle = type("ButtonStyle", (), {"primary": 1})
-
-    discord = DummyDiscord()
-    app_commands = DummyAppCommands()
-    commands = None
-
-# ==========================================
-# Bot初期化
+# Flask & Discord Bot 初期化
 # ==========================================
 TOKEN = os.getenv("DISCORD_TOKEN")
 app = Flask(__name__)
@@ -112,27 +20,9 @@ app = Flask(__name__)
 def health():
     return "BRT Bot is running"
 
-if commands is None:
-    class DummyBot:
-        def __init__(self, *args, **kwargs):
-            self.tree = self
-        def command(self, *args, **kwargs):
-            def deco(func):
-                return func
-            return deco
-        def event(self, *args, **kwargs):
-            def deco(func):
-                return func
-            return deco
-        async def sync(self):
-            pass
-        def run(self, *args, **kwargs):
-            pass
-    bot = DummyBot()
-else:
-    intents = discord.Intents.default()
-    intents.members = True
-    bot = commands.Bot(command_prefix="/", intents=intents)
+intents = discord.Intents.default()
+intents.members = True
+bot = commands.Bot(command_prefix="/", intents=intents)
 
 # ==========================================
 # JSON 永続化データ管理
@@ -239,10 +129,10 @@ RAW_SEGMENTS = [
     ("虹の原中央", "団地", 45), ("団地", "月見原", 45), ("月見原", "あけぼの", 45), ("あけぼの", "虹の原中央", 45),
     ("団地", "中央", 60), ("中央", "センター", 45), ("運動公園", "春巻公園", 45), ("春巻公園", "運動公園", 45),
     # BRT2
-    ("あけぼの", "春町公園", 45), ("春町公園", "灯", 60), ("灯", "北吉浪", 60), ("北吉浪", "本吉浪", 75), ("本吉浪", "本町", 60),
+    ("あけぼon", "春町公園", 45), ("春町公園", "灯", 60), ("灯", "北吉浪", 60), ("北吉浪", "本吉浪", 75), ("本吉浪", "本町", 60),
     # BRT2-3
     ("本町", "本吉浪", 60), ("本吉浪", "北吉浪", 75), ("北吉浪", "吉浪各務原", 105), ("吉浪各務原", "BRT海老塚", 45), ("BRT海老塚", "団地西", 60), ("団地西", "病院", 60),
-    # 虹2 (あおなみを出たら虹の原中央を経由する環状線へ修正)
+    # 虹2 (あおなみを出たら虹の原中央を経由する環状線)
     ("あおなみ", "虹の原中央", 30), ("虹の原中央", "中央", 45), ("中央", "中央坂下", 45), ("中央坂下", "団地西", 30), 
     ("団地西", "本新宿", 60), ("本新宿", "公民館前", 45), ("公民館前", "三叉路", 45), ("三叉路", "あおなみ", 60),
     # BRT5(出入)
@@ -266,7 +156,6 @@ def find_shortest_path(start, end):
     if start not in NETWORK or end not in NETWORK:
         return None
     
-    # 環状線で同じ停留所を指定した場合は1周するルートを組む
     if start == end:
         shortest_full_path = None
         min_cost = float('inf')
@@ -444,6 +333,7 @@ async def brt_create(interaction: discord.Interaction, 開始停留所: str, 終
     output.extend(lines)
     await interaction.response.send_message("\n".join(output))
 
+# 選択肢の設定をデコレータの最下層（関数の直上）に配置して修正
 @app_commands.choices(
     車両数=[
         app_commands.Choice(name="1台", value=1), app_commands.Choice(name="2台", value=2),
@@ -452,7 +342,7 @@ async def brt_create(interaction: discord.Interaction, 開始停留所: str, 終
     ]
 )
 @bot.tree.command(name="brt-create-emp", description="複数車両BRTダイヤ作成（フォーム自由入力）")
-async def brt_create_emp(interaction: discord.Interaction, 車楊数: int):
+async def brt_create_emp(interaction: discord.Interaction, 車両数: int):
     if not await check_command_permission(interaction, "create_emp"): return
 
     async def generate_emp_timetable(interaction: discord.Interaction, all_trains_data: list):
@@ -470,7 +360,7 @@ async def brt_create_emp(interaction: discord.Interaction, 車楊数: int):
                 messages.append("")
         await interaction.followup.send("\n".join(messages), ephemeral=True)
 
-    await interaction.response.send_modal(TrainInfoModal(1, 車楊数, [], generate_emp_timetable))
+    await interaction.response.send_modal(TrainInfoModal(1, 車両数, [], generate_emp_timetable))
 
 # ==========================================
 # システム起動処理
