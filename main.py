@@ -230,21 +230,21 @@ async def check_command_permission(interaction: discord.Interaction, command_nam
 # 【データ更新】BRTデータ (路線・停留所・所要時間)
 # ==========================================
 ROUTE_STATIONS = {
-    # 新しく指定された巡回ルート（同じ駅を複数回通るため完全固定の一方通行路線として定義）
+    # 巡回ルート
     "BRT1": ["あおなみセンター", "虹の原中央", "鶴巻団地", "月見原", "運動公園", "春町公園", "あけぼの", "虹の原中央", "あけぼの"],
     
     "BRT2": ["あけぼの", "春町公園", "灯", "北吉浪", "本吉浪", "吉浪本町"],
     "BRT2-3": ["吉浪本町", "本吉浪", "北吉浪", "吉浪各務原", "BRT海老塚", "団地西", "総合病院"],
     
-    # 虹02：一方通行の環状線
-    "虹02": ["あおなみセンター", "虹の原中央", "中央坂下", "団地西", "本新宿", "公民館前", "三叉路", "あおなみ", "あおなみセンター"],
+    # 虹02：終点を 三叉路 ➔ あおなみセンター に修正
+    "虹02": ["あおなみセンター", "虹の原中央", "中央坂下", "団地西", "本新宿", "公民館前", "三叉路", "あおなみセンター"],
     
     "BRT5(出入)": ["車庫", "センター本通り", "たちばな", "北詰"],
     "BRT5": ["北詰", "たちばな", "本通り", "車庫", "シャトル虹の原", "中央", "中央坂下", "団地西", "2丁目鶴巻通り", "吉田クリニック", "運動公園", "北吉浪"],
     "霞01": ["月見原", "波平入口", "団地西", "虹の原中央", "あおなみセンター", "夢が丘6丁目", "つばき産業道路"]
 }
 
-# 一方通行路線の定義リスト（BRT1は順序固定の特殊路線の扱い）
+# 一方通行路線の定義リスト
 ONE_WAY_ROUTES = ["BRT1", "虹02"]
 
 STOP_TIME = 15  
@@ -253,7 +253,7 @@ MIN_HEADWAY = 2
 
 # 隣接区間の所要時間（秒）
 SEGMENT_TIMES = {
-    # BRT1 (新規ルート用)
+    # BRT1
     ("あおなみセンター", "虹の原中央"): 45, 
     ("虹の原中央", "鶴巻団地"): 60, 
     ("鶴巻団地", "月見原"): 45, 
@@ -282,8 +282,7 @@ SEGMENT_TIMES = {
     ("団地西", "本新宿"): 60, 
     ("本新宿", "公民館前"): 45, 
     ("公民館前", "三叉路"): 45, 
-    ("三叉路", "あおなみ"): 60,
-    ("あおなみ", "あおなみセンター"): 60, 
+    ("三叉路", "あおなみセンター"): 60, # あおなみをスルーして直結
     
     # BRT5(出入)
     ("車庫", "センター本通り"): 45, 
@@ -333,24 +332,19 @@ def build_station_path(route_name, start_station, end_station):
     if start_station not in stations: return None, f"開始停留所「{start_station}」が存在しません"
     if end_station not in stations: return None, f"終了停留所「{end_station}」が存在しません"
 
-    # 同一駅がリスト内に複数存在する場合がある路線の特別処理 (BRT1など)
     if route_name in ONE_WAY_ROUTES:
-        # 開始駅の最初の位置を探す
         try:
             s_idx = stations.index(start_station)
         except ValueError:
             return None, "開始駅の探索に失敗しました"
         
-        # 開始駅から先の部分で、終了駅が最初に出現する位置を探す
         sub_list = stations[s_idx:]
         if end_station in sub_list:
             e_idx = s_idx + sub_list.index(end_station)
-            # 同じインデックスかつ同じ停留所で、環状線構造の場合のみ一周させる
             if s_idx == e_idx and stations[0] == stations[-1]:
                 return stations[s_idx:] + stations[1:s_idx+1], None
             return stations[s_idx:e_idx + 1], None
         
-        # リストの先頭に戻って繋ぐ（環状線「虹02」用のフォールバック）
         if stations[0] == stations[-1] and end_station in stations:
             e_idx = stations.index(end_station)
             return stations[s_idx:-1] + stations[:e_idx + 1], None
@@ -459,7 +453,7 @@ async def create_auto(interaction: discord.Interaction, 路線: str, 開始駅: 
 
     lines = [f"【自動ダイヤ】{路線} {開始駅}→{終了駅}"]
     for idx, train in enumerate(results, 1):
-        lines.append(f"便番号{idx}: {train['departure']}発")
+        lines.append(f"便番号{idx}: {train['departure']}发")
         lines.append(f"  {train['note']}")
         lines.extend(f"  {line}" for line in train["timetable"])
         lines.append("")
