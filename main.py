@@ -227,33 +227,34 @@ async def check_command_permission(interaction: discord.Interaction, command_nam
     return True
 
 # ==========================================
-# 【完成版】BRTデータ (路線・停留所・所要時間)
+# 【データ更新】BRTデータ (路線・停留所・所要時間)
 # ==========================================
 ROUTE_STATIONS = {
-    # あけぼの ➔ 虹の原中央 ➔ あおなみセンター の正しい順番に修正
-    "BRT1": ["あけぼの", "虹の原中央", "あおなみセンター"],
-    # 春巻公園から始まるルートを別路線として独立
-    "BRT1(春巻)": ["春巻公園", "運動公園", "月見原", "鶴巻団地", "虹の原中央", "あおなみセンター"],
+    # 一方通行ルートに一本化
+    "BRT1": ["あけぼの", "春巻公園", "運動公園", "月見原", "鶴巻団地", "虹の原中央", "あおなみセンター"],
     
     "BRT2": ["あけぼの", "春町公園", "灯", "北吉浪", "本吉浪", "吉浪本町"],
     "BRT2-3": ["吉浪本町", "本吉浪", "北吉浪", "吉浪各務原", "BRT海老塚", "団地西", "総合病院"],
-    "虹2": ["あおなみセンター", "虹の原中央", "中央坂下", "団地西", "本新宿", "公民館前", "三叉路", "あおなみ"],
+    
+    # 虹02へ改名 ＋ 環状線（最初と最後を一致させる）かつ一方通行
+    "虹02": ["あおなみセンター", "虹の原中央", "中央坂下", "団地西", "本新宿", "公民館前", "三叉路", "あおなみ", "あおなみセンター"],
+    
     "BRT5(出入)": ["車庫", "センター本通り", "たちばな", "北詰"],
     "BRT5": ["北詰", "たちばな", "本通り", "車庫", "シャトル虹の原", "中央", "中央坂下", "団地西", "2丁目鶴巻通り", "吉田クリニック", "運動公園", "北吉浪"],
     "霞01": ["月見原", "波平入口", "団地西", "虹の原中央", "あおなみセンター", "夢が丘6丁目", "つばき産業道路"]
 }
 
-STOP_TIME = 15  # 停車時間を15秒に設定
+# 一方通行路線の定義リスト
+ONE_WAY_ROUTES = ["BRT1", "虹02"]
+
+STOP_TIME = 15  
 TURNBACK_MINUTES = 5
 MIN_HEADWAY = 2
 
 # 隣接区間の所要時間（秒）
 SEGMENT_TIMES = {
     # BRT1
-    ("あけぼの", "虹の原中央"): 45, 
-    ("虹の原中央", "あおなみセンター"): 45,
-    
-    # BRT1(春巻)
+    ("あけぼの", "春巻公園"): 45, 
     ("春巻公園", "運動公園"): 45, 
     ("運動公園", "月見原"): 45, 
     ("月見原", "鶴巻団地"): 45, 
@@ -275,7 +276,7 @@ SEGMENT_TIMES = {
     ("BRT海老塚", "団地西"): 60, 
     ("団地西", "総合病院"): 60,
     
-    # 虹2
+    # 虹02
     ("あおなみセンター", "虹の原中央"): 75, 
     ("虹の原中央", "中央坂下"): 45, 
     ("中央坂下", "団地西"): 30, 
@@ -283,6 +284,7 @@ SEGMENT_TIMES = {
     ("本新宿", "公民館前"): 45, 
     ("公民館前", "三叉路"): 45, 
     ("三叉路", "あおなみ"): 60,
+    ("あおなみ", "あおなみセンター"): 60, 
     
     # BRT5(出入)
     ("車庫", "センター本通り"): 45, 
@@ -317,7 +319,7 @@ def get_segment_time(u, v):
     return None
 
 # ==========================================
-# ダイヤ計算ロジック・共通関数
+# ダイヤ計算ロジック・共通関数 (一方通行・環状対応)
 # ==========================================
 def round_time(dt):
     if dt.second == 0 or dt.second == 30:
@@ -326,27 +328,53 @@ def round_time(dt):
         return dt.replace(second=30, microsecond=0)
     return (dt + timedelta(seconds=60 - dt.second)).replace(second=0, microsecond=0)
 
-def generate_formatted_timetable(route_name, start_station, end_station, start_time):
-    if route_name not in ROUTE_STATIONS: return None, f"「{route_name}」は未実装の路線です"
+def build_station_path(route_name, start_station, end_station):
+    if route_name not in ROUTE_STATIONS: return None, "未実装の路線です"
     stations = ROUTE_STATIONS[route_name]
+    if start_station not in stations: return None, f"開始停留所「{start_station}」が存在しません"
+    if end_station not in stations: return None, f"終了停留所「{end_station}」が存在しません"
 
-    if start_station not in stations: return None, f"開始停留所「{start_station}」は路線「{route_name}」に存在しません"
-    if end_station not in stations: return None, f"終了停留所「{end_station}」は路線「{route_name}」に存在しません"
+    is_circular = (stations[0] == stations[-1])
 
-    # 環状線の1周判定
-    if start_station == end_station:
-        if stations[0] == stations[-1]:
-            idx = stations.index(start_station)
-            path = stations[idx:] + stations[1:idx+1]
-        else:
-            return None, "この路線は環状線ではないため、同じ停留所への運行はできません"
-    else:
+    # --- 一方通行路線のルート構築ロジック ---
+    if route_name in ONE_WAY_ROUTES:
+        if start_station == end_station:
+            if is_circular:
+                idx = stations.index(start_station)
+                return stations[idx:] + stations[1:idx+1], None
+            else:
+                return None, f"「{route_name}」は一方通行路線の為、同じ停留所への運行はできません"
+        
         start_idx = stations.index(start_station)
-        end_idx = stations.index(end_station)
+        try:
+            end_idx = stations.index(end_station)
+        except ValueError:
+            end_idx = len(stations) - 1
+
         if start_idx <= end_idx:
-            path = stations[start_idx:end_idx + 1]
+            return stations[start_idx:end_idx + 1], None
         else:
-            path = list(reversed(stations[end_idx:start_idx + 1]))
+            if is_circular:
+                # 環状線の場合は終端を越えて回す
+                return stations[start_idx:-1] + stations[:end_idx + 1], None
+            else:
+                return None, f"「{route_name}」は一方通行路線の為、逆方向のダイヤは作成できません"
+
+    # --- 通常（双方向）路線のロジック ---
+    if start_station == end_station:
+        if is_circular:
+            idx = stations.index(start_station)
+            return stations[idx:] + stations[1:idx+1], None
+        return [start_station], None
+
+    s = stations.index(start_station)
+    e = stations.index(end_station)
+    if s <= e: return stations[s:e + 1], None
+    return list(reversed(stations[e:s + 1])), None
+
+def generate_formatted_timetable(route_name, start_station, end_station, start_time):
+    path, error = build_station_path(route_name, start_station, end_station)
+    if error: return None, error
 
     try:
         current = datetime.strptime(start_time, "%H:%M").replace(second=0, microsecond=0)
@@ -374,23 +402,6 @@ def generate_formatted_timetable(route_name, start_station, end_station, start_t
             current = departure
 
     return lines, None
-
-def build_station_path(route_name, start_station, end_station):
-    if route_name not in ROUTE_STATIONS: return None, "未実装の路線です"
-    stations = ROUTE_STATIONS[route_name]
-    if start_station not in stations: return None, "開始停留所が存在しません"
-    if end_station not in stations: return None, "終了停留所が存在しません"
-
-    if start_station == end_station:
-        if stations[0] == stations[-1]:
-            idx = stations.index(start_station)
-            return stations[idx:] + stations[1:idx+1], None
-        return [start_station], None
-
-    s = stations.index(start_station)
-    e = stations.index(end_station)
-    if s <= e: return stations[s:e + 1], None
-    return list(reversed(stations[e:s + 1])), None
 
 def generate_auto_timetable(route_name, start_station, end_station, start_time, end_time, count):
     if count < 1: return None, "本数は1以上です"
