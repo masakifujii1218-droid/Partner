@@ -230,13 +230,13 @@ async def check_command_permission(interaction: discord.Interaction, command_nam
 # 【データ更新】BRTデータ (路線・停留所・所要時間)
 # ==========================================
 ROUTE_STATIONS = {
-    # 一方通行ルートに一本化
-    "BRT1": ["あけぼの", "春巻公園", "運動公園", "月見原", "鶴巻団地", "虹の原中央", "あおなみセンター"],
+    # 新しく指定された巡回ルート（同じ駅を複数回通るため完全固定の一方通行路線として定義）
+    "BRT1": ["あおなみセンター", "虹の原中央", "鶴巻団地", "月見原", "運動公園", "春町公園", "あけぼの", "虹の原中央", "あけぼの"],
     
     "BRT2": ["あけぼの", "春町公園", "灯", "北吉浪", "本吉浪", "吉浪本町"],
     "BRT2-3": ["吉浪本町", "本吉浪", "北吉浪", "吉浪各務原", "BRT海老塚", "団地西", "総合病院"],
     
-    # 虹02へ改名 ＋ 環状線（最初と最後を一致させる）かつ一方通行
+    # 虹02：一方通行の環状線
     "虹02": ["あおなみセンター", "虹の原中央", "中央坂下", "団地西", "本新宿", "公民館前", "三叉路", "あおなみ", "あおなみセンター"],
     
     "BRT5(出入)": ["車庫", "センター本通り", "たちばな", "北詰"],
@@ -244,7 +244,7 @@ ROUTE_STATIONS = {
     "霞01": ["月見原", "波平入口", "団地西", "虹の原中央", "あおなみセンター", "夢が丘6丁目", "つばき産業道路"]
 }
 
-# 一方通行路線の定義リスト
+# 一方通行路線の定義リスト（BRT1は順序固定の特殊路線の扱い）
 ONE_WAY_ROUTES = ["BRT1", "虹02"]
 
 STOP_TIME = 15  
@@ -253,16 +253,16 @@ MIN_HEADWAY = 2
 
 # 隣接区間の所要時間（秒）
 SEGMENT_TIMES = {
-    # BRT1
-    ("あけぼの", "春巻公園"): 45, 
-    ("春巻公園", "運動公園"): 45, 
-    ("運動公園", "月見原"): 45, 
-    ("月見原", "鶴巻団地"): 45, 
-    ("鶴巻団地", "虹の原中央"): 60, 
-    ("虹の原中央", "あおなみセンター"): 45,
-    
+    # BRT1 (新規ルート用)
+    ("あおなみセンター", "虹の原中央"): 45, 
+    ("虹の原中央", "鶴巻団地"): 60, 
+    ("鶴巻団地", "月見原"): 45, 
+    ("月見原", "運動公園"): 45, 
+    ("運動公園", "春町公園"): 45, 
+    ("春町公園", "あけぼの"): 45,
+    ("あけぼの", "虹の原中央"): 45,
+
     # BRT2
-    ("あけぼの", "春町公園"): 45, 
     ("春町公園", "灯"): 60, 
     ("灯", "北吉浪"): 60, 
     ("北吉浪", "本吉浪"): 75, 
@@ -277,7 +277,6 @@ SEGMENT_TIMES = {
     ("団地西", "総合病院"): 60,
     
     # 虹02
-    ("あおなみセンター", "虹の原中央"): 75, 
     ("虹の原中央", "中央坂下"): 45, 
     ("中央坂下", "団地西"): 30, 
     ("団地西", "本新宿"): 60, 
@@ -319,7 +318,7 @@ def get_segment_time(u, v):
     return None
 
 # ==========================================
-# ダイヤ計算ロジック・共通関数 (一方通行・環状対応)
+# ダイヤ計算ロジック・共通関数 (重複駅・一方通行対応)
 # ==========================================
 def round_time(dt):
     if dt.second == 0 or dt.second == 30:
@@ -334,35 +333,33 @@ def build_station_path(route_name, start_station, end_station):
     if start_station not in stations: return None, f"開始停留所「{start_station}」が存在しません"
     if end_station not in stations: return None, f"終了停留所「{end_station}」が存在しません"
 
-    is_circular = (stations[0] == stations[-1])
-
-    # --- 一方通行路線のルート構築ロジック ---
+    # 同一駅がリスト内に複数存在する場合がある路線の特別処理 (BRT1など)
     if route_name in ONE_WAY_ROUTES:
-        if start_station == end_station:
-            if is_circular:
-                idx = stations.index(start_station)
-                return stations[idx:] + stations[1:idx+1], None
-            else:
-                return None, f"「{route_name}」は一方通行路線の為、同じ停留所への運行はできません"
-        
-        start_idx = stations.index(start_station)
+        # 開始駅の最初の位置を探す
         try:
-            end_idx = stations.index(end_station)
+            s_idx = stations.index(start_station)
         except ValueError:
-            end_idx = len(stations) - 1
-
-        if start_idx <= end_idx:
-            return stations[start_idx:end_idx + 1], None
-        else:
-            if is_circular:
-                # 環状線の場合は終端を越えて回す
-                return stations[start_idx:-1] + stations[:end_idx + 1], None
-            else:
-                return None, f"「{route_name}」は一方通行路線の為、逆方向のダイヤは作成できません"
+            return None, "開始駅の探索に失敗しました"
+        
+        # 開始駅から先の部分で、終了駅が最初に出現する位置を探す
+        sub_list = stations[s_idx:]
+        if end_station in sub_list:
+            e_idx = s_idx + sub_list.index(end_station)
+            # 同じインデックスかつ同じ停留所で、環状線構造の場合のみ一周させる
+            if s_idx == e_idx and stations[0] == stations[-1]:
+                return stations[s_idx:] + stations[1:s_idx+1], None
+            return stations[s_idx:e_idx + 1], None
+        
+        # リストの先頭に戻って繋ぐ（環状線「虹02」用のフォールバック）
+        if stations[0] == stations[-1] and end_station in stations:
+            e_idx = stations.index(end_station)
+            return stations[s_idx:-1] + stations[:e_idx + 1], None
+        
+        return None, f"「{route_name}」の一方通行の経路順では {start_station} から {end_station} へ運行できません"
 
     # --- 通常（双方向）路線のロジック ---
     if start_station == end_station:
-        if is_circular:
+        if stations[0] == stations[-1]:
             idx = stations.index(start_station)
             return stations[idx:] + stations[1:idx+1], None
         return [start_station], None
